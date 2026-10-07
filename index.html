@@ -5808,4 +5808,62 @@
 
         
 </script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@5.6.1/dist/maplibre-gl.css">
+<script src="https://cdn.jsdelivr.net/npm/maplibre-gl@5.6.1/dist/maplibre-gl.js"></script>
+<style>
+#terrain-map{position:fixed;inset:0;display:none;z-index:1100}
+#view-tools{position:fixed;top:12px;left:65px;z-index:1200;background:white;border-radius:9px;padding:10px;box-shadow:0 2px 10px #0003;font:13px Arial;max-width:280px}
+#view-tools button{padding:7px 12px;border:1px solid #ccc;border-radius:6px;background:#fff;cursor:pointer}#view-tools button[aria-pressed=true]{background:#175c48;color:white}
+#terrain-tools{display:none;margin-top:10px}#terrain-tools label{display:block;margin:6px 0}#terrain-tools input[type=range]{width:130px;vertical-align:middle}
+.maplibregl-popup-content{max-height:65vh;overflow:auto;padding:18px}.maplibregl-popup-content .drum-image{max-width:100%;height:auto}
+@media(max-width:600px){#view-tools{left:10px;top:10px;max-width:230px}.maplibregl-popup-content{max-height:50vh}}
+</style>
+<div id="terrain-map"></div>
+<div id="view-tools"><button id="view-flat" aria-pressed="true">Mapa 2D</button> <button id="view-3d" aria-pressed="false">Terreno 3D</button><div id="terrain-tools"><label>Relieve <input id="relief" aria-label="Intensidad del relieve" type="range" min="1" max="3" step="0.25" value="1.5"> <span id="relief-value">1.5×</span></label><label>Inclinación <input id="tilt" aria-label="Inclinación" type="range" min="0" max="75" value="65"></label><button id="rotate-terrain">Girar 45°</button> <button id="fit-route">Ver ruta</button><div id="terrain-filters"></div><small>Arrastra con el botón derecho para girar.<br>Relieve amplificado; 1× muestra la escala real.</small></div><div id="terrain-status" role="status"></div></div>
+<script>
+(function(){
+const flat=map_2551a4f9f7ddabbe6e8c95f1ad687db7;
+const groups=layer_control_54b412f1af2c52b8967aed54de10a85b_layers.overlays;
+let terrain,ready=false,active=false,popup;
+const selected={};const features=[],photos=new Map();const layerIds={};
+Object.entries(groups).forEach(([name,group],groupIndex)=>{
+ selected[name]=flat.hasLayer(group);layerIds[name]='overlay-'+groupIndex;
+ group.eachLayer(layer=>{
+   if(layer instanceof L.CircleMarker){const ll=layer.getLatLng(),id=features.length;
+     const content=layer.getPopup()?.getContent();photos.set(id,typeof content==='string'?content:content?.outerHTML||'');
+     features.push({type:'Feature',geometry:{type:'Point',coordinates:[ll.lng,ll.lat]},properties:{id,group:name,color:layer.options.fillColor,radius:layer.options.radius||5}});
+   }else if(layer instanceof L.Polyline){features.push({...layer.toGeoJSON(),properties:{group:name}});}
+ });
+});
+const bounds=flat.getBounds();
+function fit(){terrain.fitBounds([[bounds.getWest(),bounds.getSouth()],[bounds.getEast(),bounds.getNorth()]],{padding:{top:130,bottom:60,left:70,right:70},pitch:65,bearing:-25,duration:700});document.getElementById('tilt').value=65;}
+function show(is3d){active=is3d;document.getElementById('terrain-map').style.display=is3d?'block':'none';document.getElementById('terrain-tools').style.display=is3d?'block':'none';document.getElementById('view-flat').setAttribute('aria-pressed',!is3d);document.getElementById('view-3d').setAttribute('aria-pressed',is3d);if(is3d){terrain?.resize();}else{flat.invalidateSize();popup?.remove();}}
+Object.entries(groups).forEach(([name,group])=>{const label=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.checked=selected[name];label.append(input,document.createTextNode(' '+name));document.getElementById('terrain-filters').append(label);input.onchange=()=>{selected[name]=input.checked;if(ready)terrain.setLayoutProperty(layerIds[name],'visibility',input.checked?'visible':'none');input.checked?flat.addLayer(group):flat.removeLayer(group);};flat.on('overlayadd overlayremove',e=>{if(e.layer===group){selected[name]=flat.hasLayer(group);input.checked=selected[name];if(ready)terrain.setLayoutProperty(layerIds[name],'visibility',selected[name]?'visible':'none');}});});
+document.getElementById('view-flat').onclick=()=>show(false);
+document.getElementById('view-3d').onclick=()=>{
+ if(terrain){show(true);return;}
+ const status=document.getElementById('terrain-status');
+ if(!window.maplibregl){status.textContent='No se pudo cargar la vista 3D. Intenta de nuevo.';return;}
+ try{
+ show(true);status.textContent='Cargando relieve…';
+ const dem={type:'raster-dem',tiles:['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],encoding:'terrarium',tileSize:256,maxzoom:15,attribution:'Terrain: Mapzen / AWS Open Data'};
+ terrain=new maplibregl.Map({container:'terrain-map',center:[bounds.getCenter().lng,bounds.getCenter().lat],zoom:13,pitch:65,bearing:-25,maxPitch:75,style:{version:8,sources:{base:{type:'raster',tiles:['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],tileSize:256,maxzoom:19,attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>'},elevation:dem,shading:{...dem}},layers:[{id:'base',type:'raster',source:'base'},{id:'hillshade',type:'hillshade',source:'shading',paint:{'hillshade-exaggeration':0.35}}]}});
+ terrain.addControl(new maplibregl.NavigationControl({visualizePitch:true}),'top-right');terrain.addControl(new maplibregl.ScaleControl(),'bottom-left');
+ terrain.on('error',e=>{console.error(e.error);if(!ready)status.textContent='El relieve tarda en cargar. Puedes volver al mapa 2D.';});
+ terrain.on('load',()=>{
+  terrain.setTerrain({source:'elevation',exaggeration:Number(document.getElementById('relief').value)});
+  terrain.addSource('observations',{type:'geojson',data:{type:'FeatureCollection',features}});
+  Object.entries(groups).forEach(([name,group],i)=>{const route=name==='GoPro GPS route',id=layerIds[name];terrain.addLayer({id,type:route?'line':'circle',source:'observations',filter:['==',['get','group'],name],layout:{visibility:selected[name]?'visible':'none'},paint:route?{'line-color':'#555','line-width':3}:{'circle-color':['get','color'],'circle-radius':['get','radius'],'circle-stroke-color':'#111','circle-stroke-width':1,'circle-opacity':0.9}});
+   if(!route){terrain.on('click',id,e=>{const f=e.features[0];popup?.remove();popup=new maplibregl.Popup({maxWidth:'400px'}).setLngLat(f.geometry.coordinates).setHTML(photos.get(Number(f.properties.id))||'').addTo(terrain);});terrain.on('mouseenter',id,()=>terrain.getCanvas().style.cursor='pointer');terrain.on('mouseleave',id,()=>terrain.getCanvas().style.cursor='');}
+  });ready=true;status.textContent='';fit();
+ });
+ }catch(e){terrain?.remove();terrain=null;show(false);status.textContent='Este navegador no permite la vista 3D. El mapa 2D sigue disponible.';console.error(e);}
+};
+document.getElementById('relief').oninput=e=>{document.getElementById('relief-value').textContent=e.target.value+'×';if(ready)terrain.setTerrain({source:'elevation',exaggeration:Number(e.target.value)});};
+document.getElementById('tilt').oninput=e=>terrain?.setPitch(Number(e.target.value));
+document.getElementById('rotate-terrain').onclick=()=>terrain?.easeTo({bearing:terrain.getBearing()+45,duration:500});
+document.getElementById('fit-route').onclick=()=>ready&&fit();
+})();
+</script>
+
 </html>
